@@ -1,18 +1,31 @@
 import { SMTPServer, SMTPServerDataStream } from "smtp-server";
 import axios from "axios";
-import { SMTP2WEB_PORT, SMTP2WEB_WEBHOOK_URL } from "./config";
+import { logger, SMTP2WEB_PORT, SMTP2WEB_WEBHOOK_URL } from "./config";
 
 async function webHookEmail(email: string): Promise<void> {
   const data = email;
 
-  const response = await axios(SMTP2WEB_WEBHOOK_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "message/rfc822",
-    },
-    data,
-  });
-  console.debug("Webhook invoked: %s", response.statusText);
+  await Promise.allSettled(
+    SMTP2WEB_WEBHOOK_URL.map((url, index) => {
+      logger.verbose(`invoking webhook ${index}#`);
+      return axios(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "message/rfc822",
+        },
+        data,
+      })
+        .then((response) => {
+          logger.info(
+            `webhook ${index}# response: ${response.status} ${response.statusText}`
+          );
+          return response;
+        })
+        .catch((err) => {
+          logger.error(`webhook ${index}# error: ${err.message}`);
+        });
+    })
+  );
 }
 
 async function streamToString(stream: SMTPServerDataStream): Promise<string> {
@@ -27,26 +40,29 @@ async function streamToString(stream: SMTPServerDataStream): Promise<string> {
 
 async function handleEmail(stream: SMTPServerDataStream) {
   const email = await streamToString(stream);
-  console.debug("received email");
+  logger.debug("received email", { email });
   await webHookEmail(email);
 }
 
 async function main() {
-  console.debug("starting mailserver");
+  logger.info("starting mailserver");
   const server = new SMTPServer({
     authOptional: true,
-    onData(stream, _session, callback) {
+    onData(stream, session, callback) {
+      logger.info("received email", {
+        rcptTo: session.envelope.rcptTo,
+      });
       handleEmail(stream);
       stream.on("end", callback);
     },
   });
 
   server.on("error", (err) => {
-    console.error("Error %s", err.message);
+    logger.error("Error %s", err.message);
   });
 
   server.listen(SMTP2WEB_PORT, () => {
-    console.info("mailserver is running");
+    logger.info("mailserver is running");
   });
 }
 
